@@ -1,60 +1,62 @@
 import os
 import asyncio
 import aiohttp
+import re
 from supabase import create_client
 
-# Database Client Setup
 supabase = create_client(os.getenv("SUPABASE_URL"), os.getenv("SUPABASE_KEY"))
 
 def get_prompt(market_context):
-    return f"""
-    Analyze 15M Market Data: {market_context}
-    Provide action: BUY, SELL, or HOLD.
-    Confidence: 0 to 100.
-    Format response EXACTLY like this: BUY|85|Wick rejection at support
-    No extra text.
-    """
+    return f"Analyze 15M Market Data: {market_context}\nREPLY STRICTLY IN THIS FORMAT: BUY|85|Reason\nNO markdown, NO extra words."
 
-# --- GOOGLE GEMINI MODELS ---
-async def call_gemini(session, model_name, prompt):
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={os.getenv('GEMINI_API_KEY')}"
-    payload = {"contents": [{"parts": [{"text": prompt}]}]}
+def sanitize_vote(raw_text):
+    """AI ke kachre ko saaf kar ke strict DB format banata hai."""
     try:
-        async with session.post(url, json=payload, timeout=10) as r:
-            res = await r.json()
-            return model_name, res['candidates'][0]['content']['parts'][0]['text'].strip()
-    except Exception:
-        return model_name, "HOLD|0|Skipped (API Error)"
+        clean_text = raw_text.replace('`', '').replace('\n', '').strip()
+        parts = clean_text.split('|')
+        if len(parts) >= 3:
+            raw_vote = parts[0].upper()
+            if "BUY" in raw_vote: final_vote = "BUY"
+            elif "SELL" in raw_vote: final_vote = "SELL"
+            else: final_vote = "HOLD"
+            
+            conf_str = re.sub(r'\D', '', parts[1])
+            conf = int(conf_str) if conf_str else 0
+            
+            reason = parts[2].strip()[:200]
+            return final_vote, conf, reason
+    except:
+        pass
+    return "HOLD", 0, f"Format Error: {raw_text[:50]}"
 
-# --- GROQ CLOUD MODELS ---
-async def call_groq(session, model_name, prompt):
-    url = "https://api.groq.com/openai/v1/chat/completions"
+# --- API Execution Blocks ---
+async def call_gemini(session, model, prompt):
+    url = f"[https://generativelanguage.googleapis.com/v1beta/models/](https://generativelanguage.googleapis.com/v1beta/models/){model}:generateContent?key={os.getenv('GEMINI_API_KEY')}"
+    try:
+        async with session.post(url, json={"contents": [{"parts": [{"text": prompt}]}]}, timeout=10) as r:
+            res = await r.json()
+            return model, res['candidates'][0]['content']['parts'][0]['text']
+    except: return model, "HOLD|0|API Fail"
+
+async def call_groq(session, model, prompt):
+    url = "[https://api.groq.com/openai/v1/chat/completions](https://api.groq.com/openai/v1/chat/completions)"
     headers = {"Authorization": f"Bearer {os.getenv('GROQ_API_KEY')}"}
-    payload = {"model": model_name, "messages": [{"role": "user", "content": prompt}]}
     try:
-        async with session.post(url, json=payload, headers=headers, timeout=10) as r:
+        async with session.post(url, json={"model": model, "messages": [{"role": "user", "content": prompt}]}, headers=headers, timeout=10) as r:
             res = await r.json()
-            return model_name, res['choices'][0]['message']['content'].strip()
-    except Exception:
-        return model_name, "HOLD|0|Skipped (API Error)"
+            return model, res['choices'][0]['message']['content']
+    except: return model, "HOLD|0|API Fail"
 
-# --- MISTRAL AI MODEL (AUTO-SKIP ON FAILURE) ---
 async def call_mistral(session, prompt):
-    api_key = os.getenv("MISTRAL_API_KEY")
-    if not api_key:
-        return "Mistral-Large", "HOLD|0|Skipped (No Key)"
-        
-    url = "https://api.mistral.ai/v1/chat/completions"
-    headers = {"Authorization": f"Bearer {api_key}"}
-    payload = {"model": "mistral-large-latest", "messages": [{"role": "user", "content": prompt}]}
+    key = os.getenv("MISTRAL_API_KEY")
+    if not key: return "Mistral", "HOLD|0|No Key"
+    url = "[https://api.mistral.ai/v1/chat/completions](https://api.mistral.ai/v1/chat/completions)"
+    headers = {"Authorization": f"Bearer {key}"}
     try:
-        async with session.post(url, json=payload, headers=headers, timeout=10) as r:
-            if r.status != 200:
-                return "Mistral-Large", "HOLD|0|Skipped (Status Code Error)"
+        async with session.post(url, json={"model": "mistral-large-latest", "messages": [{"role": "user", "content": prompt}]}, headers=headers, timeout=10) as r:
             res = await r.json()
-            return "Mistral-Large", res['choices'][0]['message']['content'].strip()
-    except Exception:
-        return "Mistral-Large", "HOLD|0|Skipped (Execution Error)"
+            return "Mistral", res['choices'][0]['message']['content']
+    except: return "Mistral", "HOLD|0|API Fail"
 
 async def process_consensus(market_payload):
     async with aiohttp.ClientSession() as session:
@@ -63,7 +65,6 @@ async def process_consensus(market_payload):
             
             prompt = get_prompt(str(data))
             
-            # Parallel Calls (Gemini + Groq + Mistral)
             tasks = [
                 call_gemini(session, "gemini-1.5-pro", prompt),
                 call_gemini(session, "gemini-1.5-flash", prompt),
@@ -74,43 +75,33 @@ async def process_consensus(market_payload):
                 call_groq(session, "gemma2-9b-it", prompt),
                 call_mistral(session, prompt)
             ]
-            raw_results = await asyncio.gather(*tasks)
+            results = await asyncio.gather(*tasks)
             
             parsed_votes = []
             decision_map = {"BUY": 0, "SELL": 0, "HOLD": 0}
             
-            for ai_name, raw_text in raw_results:
-                try:
-                    vote, conf, reason = raw_text.split('|')
-                    conf = int(conf)
-                except:
-                    vote, conf, reason = "HOLD", 0, "Parsing Error"
-                
-                if vote in decision_map:
-                    decision_map[vote] += 1
-                parsed_votes.append((ai_name, vote, conf, reason))
+            # Robust Parsing Execution
+            for name, raw_text in results:
+                v, c, r = sanitize_vote(raw_text)
+                decision_map[v] += 1
+                parsed_votes.append((name, v, c, r))
             
-            # Dynamic Consensus Rule: Majority decision based on active votes
+            # Final Matrix Execution
             final_decision = max(decision_map, key=decision_map.get)
             if decision_map[final_decision] < 4: 
                 final_decision = "HOLD"
             
-            # Save Signals to Database
-            signal_res = supabase.table("signals").insert({"pair": pair, "timeframe": "15M", "final_decision": final_decision}).execute()
-            signal_id = signal_res.data[0]['id']
+            # Safe Database Injection
+            sig_res = supabase.table("signals").insert({"pair": pair, "timeframe": "15M", "final_decision": final_decision}).execute()
+            sig_id = sig_res.data[0]['id']
             
-            # Save Individual Votes
-            for name, vote, conf, reason in parsed_votes:
+            for name, v, c, r in parsed_votes:
                 supabase.table("ai_votes").insert({
-                    "signal_id": signal_id,
-                    "ai_name": name,
-                    "vote": vote,
-                    "confidence": conf,
-                    "reasoning": reason
+                    "signal_id": sig_id, "ai_name": name, "vote": v, "confidence": c, "reasoning": r
                 }).execute()
 
 if __name__ == "__main__":
     from mt5_engine import run_all_pairs
-    market_data = asyncio.run(run_all_pairs())
-    asyncio.run(process_consensus(market_data))
-          
+    data = asyncio.run(run_all_pairs())
+    asyncio.run(process_consensus(data))
+    
