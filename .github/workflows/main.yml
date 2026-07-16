@@ -3,9 +3,8 @@ name: Run Multi-AI Engine
 on:
   workflow_dispatch:
   schedule:
-    - cron: '0 * * * *' # Har 1 ghantay baad
+    - cron: '0 * * * *' # Har ghantay baad chalay ga
     
-
 jobs:
   run-engine:
     runs-on: ubuntu-latest
