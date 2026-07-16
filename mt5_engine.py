@@ -1,43 +1,42 @@
 import os
-import asyncio
-import aiohttp
+import requests
+import time
 
 TWELVEDATA_API_KEY = os.getenv("TWELVEDATA_API_KEY")
 
-async def get_pair_data(session, symbol):
-    # API rate limit check
-    if not TWELVEDATA_API_KEY:
-        return symbol, {"error": "Missing Key"}
-    
+def get_pair_data(symbol):
     url = f"https://api.twelvedata.com/time_series?symbol={symbol}&interval=15min&outputsize=1&apikey={TWELVEDATA_API_KEY}"
-    
     try:
-        async with session.get(url, timeout=10) as resp:
-            if resp.status == 429: # Rate limit hit
-                return symbol, {"close": 0, "status": "RATE_LIMITED"}
-            
-            res = await resp.json()
-            if "values" not in res:
-                return symbol, {"close": 0, "status": "NO_DATA"}
-            
-            latest = res["values"][0]
-            return symbol, {
-                "close": float(latest["close"]),
-                "high": float(latest["high"]),
-                "low": float(latest["low"])
-            }
+        response = requests.get(url, timeout=15)
+        if response.status_code == 429:
+            return symbol, {"status": "LIMIT_HIT"}
+        
+        data = response.json()
+        if "values" not in data:
+            return symbol, {"status": "NO_DATA"}
+        
+        latest = data["values"][0]
+        return symbol, {
+            "close": float(latest["close"]),
+            "high": float(latest["high"]),
+            "low": float(latest["low"])
+        }
     except Exception:
-        return symbol, {"close": 0, "status": "API_ERROR"}
+        return symbol, {"status": "ERROR"}
 
-async def run_all_pairs():
+def run_all_pairs():
     pairs = ["XAU/USD", "EUR/USD", "GBP/USD", "BTC/USD"]
-    async with aiohttp.ClientSession() as session:
-        # 1.5s delay between calls to avoid API ban
-        tasks = []
-        for pair in pairs:
-            tasks.append(get_pair_data(session, pair))
-            await asyncio.sleep(2) 
+    results = {}
+    
+    for pair in pairs:
+        print(f"Fetching {pair}...")
+        results[pair] = get_pair_data(pair)[1]
+        # Rate limit bachane ke liye 65 seconds ka wait
+        time.sleep(65) 
         
-        results = await asyncio.gather(*tasks)
-        return {symbol: data for symbol, data in results}
-        
+    return results
+
+if __name__ == "__main__":
+    print("Starting Sequential Fetch...")
+    print(run_all_pairs())
+    
