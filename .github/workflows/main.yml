@@ -3,7 +3,8 @@ name: Run Multi-AI Engine
 on:
   workflow_dispatch:
   schedule:
-    - cron: '*/30 * * * *'
+    - cron: '0 * * * *' # Har 1 ghantay baad
+    
 
 jobs:
   run-engine:
