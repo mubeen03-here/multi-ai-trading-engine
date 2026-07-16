@@ -1,71 +1,47 @@
 import os
 import asyncio
 import aiohttp
-import pandas as pd
 
-# 5 Locked Pairs List
-PAIR_MAP = {
-    "XAUUSD": "XAU/USD",
-    "EURUSD": "EUR/USD",
-    "NAS100": "QQQ",
-    "USDJPY": "USD/JPY",
-    "BTCUSD": "BTC/USD"
-}
+TWELVEDATA_API_KEY = os.getenv("TWELVEDATA_API_KEY")
 
-API_KEY = os.getenv("TWELVEDATA_API_KEY")
-
-async def fetch_pair_data(session, symbol, ticker):
+async def get_pair_data(session, symbol):
     """
-    Direct Cloud REST API se 100% exact 15M candles fetch karta hai.
+    Direct TwelveData API call without heavy pandas library.
     """
-    url = f"https://api.twelvedata.com/time_series?symbol={ticker}&interval=15min&outputsize=50&apikey={API_KEY}"
+    if not TWELVEDATA_API_KEY:
+        return symbol, {"error": "Missing TWELVEDATA_API_KEY"}
+    
+    url = f"https://api.twelvedata.com/time_series?symbol={symbol}&interval=15min&outputsize=10&apikey={TWELVEDATA_API_KEY}"
     
     try:
-        async with session.get(url) as response:
-            data = await response.json()
+        async with session.get(url, timeout=10) as resp:
+            res = await resp.json()
+            if "values" not in res or not res["values"]:
+                return symbol, {"error": res.get("message", "No data returned")}
             
-            if "values" not in data:
-                return symbol, {"error": f"{symbol} data fetch failed"}
-
-            df = pd.DataFrame(data["values"])
-            
-            # Numeric conversion
-            df['open'] = df['open'].astype(float)
-            df['high'] = df['high'].astype(float)
-            df['low'] = df['low'].astype(float)
-            df['close'] = df['close'].astype(float)
-
-            # Body aur Wick Calculations
-            df['body'] = (df['close'] - df['open']).abs()
-            df['upper_wick'] = df['high'] - df[['open', 'close']].max(axis=1)
-            df['lower_wick'] = df[['open', 'close']].min(axis=1) - df['low']
-
-            resistance = float(df['high'].max())
-            support = float(df['low'].min())
-
-            last = df.iloc[0] # TwelveData delivers newest first
-            top_rejection = bool(last['upper_wick'] > (1.8 * last['body']))
-            bottom_rejection = bool(last['lower_wick'] > (1.8 * last['body']))
-
-            return symbol, {
-                "pair": symbol,
-                "timeframe": "15M",
-                "price": float(last['close']),
-                "levels": {"resistance": resistance, "support": support},
-                "rejection": {
-                    "top_rejection": top_rejection,
-                    "bottom_rejection": bottom_rejection
-                }
+            latest = res["values"][0]
+            data_summary = {
+                "close": float(latest["close"]),
+                "high": float(latest["high"]),
+                "low": float(latest["low"]),
+                "open": float(latest["open"]),
+                "volume": float(latest.get("volume", 0))
             }
+            return symbol, data_summary
     except Exception as e:
         return symbol, {"error": str(e)}
 
 async def run_all_pairs():
+    """
+    Parallel market data fetching engine.
+    """
+    pairs = ["XAU/USD", "EUR/USD", "GBP/USD", "BTC/USD"]
     async with aiohttp.ClientSession() as session:
-        tasks = [fetch_pair_data(session, pair, ticker) for pair, ticker in PAIR_MAP.items()]
+        tasks = [get_pair_data(session, pair) for pair in pairs]
         results = await asyncio.gather(*tasks)
-        return dict(results)
+        return {symbol: data for symbol, data in results}
 
 if __name__ == "__main__":
-    market_data = asyncio.run(run_all_pairs())
-    print(market_data)
+    data = asyncio.run(run_all_pairs())
+    print("Market Data Payload:", data)
+    
