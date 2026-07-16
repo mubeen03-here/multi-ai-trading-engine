@@ -1,60 +1,71 @@
-import MetaTrader5 as mt5
+import os
+import asyncio
+import aiohttp
 import pandas as pd
 
 # 5 Locked Pairs List
-TARGET_PAIRS = ["XAUUSD", "EURUSD", "NAS100", "USDJPY", "BTCUSD"]
+PAIR_MAP = {
+    "XAUUSD": "XAU/USD",
+    "EURUSD": "EUR/USD",
+    "NAS100": "QQQ",
+    "USDJPY": "USD/JPY",
+    "BTCUSD": "BTC/USD"
+}
 
-def fetch_market_data(symbol, timeframe=mt5.TIMEFRAME_M15, count=50):
+API_KEY = os.getenv("TWELVEDATA_API_KEY")
+
+async def fetch_pair_data(session, symbol, ticker):
     """
-    MT5 se numeric price, key levels, aur wick rejection tracking data extract karta hai.
+    Direct Cloud REST API se 100% exact 15M candles fetch karta hai.
     """
-    if not mt5.initialize():
-        return {"error": "MT5 initialize nahi ho saka"}
-
-    rates = mt5.copy_rates_from_pos(symbol, timeframe, 0, count)
-    mt5.shutdown()
-
-    if rates is None or len(rates) == 0:
-        return {"error": f"{symbol} ka data nahi mila"}
-
-    df = pd.DataFrame(rates)
+    url = f"https://api.twelvedata.com/time_series?symbol={ticker}&interval=15min&outputsize=50&apikey={API_KEY}"
     
-    # Body aur Wicks calculation
-    df['body'] = (df['close'] - df['open']).abs()
-    df['upper_wick'] = df['high'] - df[['open', 'close']].max(axis=1)
-    df['lower_wick'] = df[['open', 'close']].min(axis=1) - df['low']
+    try:
+        async with session.get(url) as response:
+            data = await response.json()
+            
+            if "values" not in data:
+                return symbol, {"error": f"{symbol} data fetch failed"}
 
-    # Support aur Resistance Zones
-    resistance = float(df['high'].max())
-    support = float(df['low'].min())
+            df = pd.DataFrame(data["values"])
+            
+            # Numeric conversion
+            df['open'] = df['open'].astype(float)
+            df['high'] = df['high'].astype(float)
+            df['low'] = df['low'].astype(float)
+            df['close'] = df['close'].astype(float)
 
-    # Rejection Logic: Upper/Lower Wick if > 1.8x Body Size
-    last_candle = df.iloc[-1]
-    top_rejection = last_candle['upper_wick'] > (1.8 * last_candle['body'])
-    bottom_rejection = last_candle['lower_wick'] > (1.8 * last_candle['body'])
+            # Body aur Wick Calculations
+            df['body'] = (df['close'] - df['open']).abs()
+            df['upper_wick'] = df['high'] - df[['open', 'close']].max(axis=1)
+            df['lower_wick'] = df[['open', 'close']].min(axis=1) - df['low']
 
-    return {
-        "pair": symbol,
-        "timeframe": "15M",
-        "price": float(last_candle['close']),
-        "levels": {"resistance": resistance, "support": support},
-        "rejection": {
-            "top_rejection": bool(top_rejection),
-            "bottom_rejection": bool(bottom_rejection)
-        }
-    }
+            resistance = float(df['high'].max())
+            support = float(df['low'].min())
 
-def run_all_pairs():
-    """
-    5 pairs par loop chala kar JSON dictionary ready karta hai.
-    """
-    results = {}
-    for pair in TARGET_PAIRS:
-        data = fetch_market_data(pair)
-        results[pair] = data
-    return results
+            last = df.iloc[0] # TwelveData delivers newest first
+            top_rejection = bool(last['upper_wick'] > (1.8 * last['body']))
+            bottom_rejection = bool(last['lower_wick'] > (1.8 * last['body']))
+
+            return symbol, {
+                "pair": symbol,
+                "timeframe": "15M",
+                "price": float(last['close']),
+                "levels": {"resistance": resistance, "support": support},
+                "rejection": {
+                    "top_rejection": top_rejection,
+                    "bottom_rejection": bottom_rejection
+                }
+            }
+    except Exception as e:
+        return symbol, {"error": str(e)}
+
+async def run_all_pairs():
+    async with aiohttp.ClientSession() as session:
+        tasks = [fetch_pair_data(session, pair, ticker) for pair, ticker in PAIR_MAP.items()]
+        results = await asyncio.gather(*tasks)
+        return dict(results)
 
 if __name__ == "__main__":
-    market_payload = run_all_pairs()
-    print(market_payload)
-    
+    market_data = asyncio.run(run_all_pairs())
+    print(market_data)
