@@ -5,9 +5,6 @@ import aiohttp
 TWELVEDATA_API_KEY = os.getenv("TWELVEDATA_API_KEY")
 
 async def get_pair_data(session, symbol):
-    """
-    Direct TwelveData API call without heavy pandas library.
-    """
     if not TWELVEDATA_API_KEY:
         return symbol, {"error": "Missing TWELVEDATA_API_KEY"}
     
@@ -32,9 +29,6 @@ async def get_pair_data(session, symbol):
         return symbol, {"error": str(e)}
 
 async def run_all_pairs():
-    """
-    Parallel market data fetching engine.
-    """
     pairs = ["XAU/USD", "EUR/USD", "GBP/USD", "BTC/USD"]
     async with aiohttp.ClientSession() as session:
         tasks = [get_pair_data(session, pair) for pair in pairs]
