@@ -2,8 +2,8 @@ import os
 import streamlit as st
 from supabase import create_client
 
-# Page Config for Mobile Viewports
-st.set_page_config(page_title="7-AI Trading Core", layout="compact", initial_sidebar_state="collapsed")
+# Correct Page Config for Mobile Viewports
+st.set_page_config(page_title="7-AI Trading Core", layout="centered", initial_sidebar_state="collapsed")
 
 # Database Token Exchange
 supabase = create_client(os.getenv("SUPABASE_URL"), os.getenv("SUPABASE_KEY"))
@@ -45,4 +45,4 @@ for sig in signals:
                 st.markdown(f"**{vote['vote']}** ({vote['confidence']}% Confidence)")
                 st.caption(f"*Reason:* {vote['reasoning']}")
     st.divider()
-  
+    
