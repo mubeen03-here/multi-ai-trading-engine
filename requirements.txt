@@ -1,6 +1,6 @@
 pandas
 numpy
 supabase
-MetaTrader5
 aiohttp
 asyncio
+requests
